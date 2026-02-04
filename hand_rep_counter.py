@@ -97,12 +97,8 @@ class HandRepCounter:
     def draw_visuals(self, image, height, width, time_left):
         """Draws game HUD during PLAYING state."""
         
-        thresh_y = int(height * self.threshold_pct)
-
-        # Draw Threshold
-        cv2.line(image, (0, thresh_y), (width, thresh_y), (255, 0, 0), 2)
-        cv2.putText(image, 'THRESHOLD', (int(width/2) - 40, thresh_y - 10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
+        # The visual threshold line has been removed as per user request.
+        # Logic still uses self.threshold_pct.
 
         # Calculate Total Paired Score
         left_state = self.hand_states["Left"]
@@ -192,7 +188,7 @@ class HandRepCounter:
                 cv2.rectangle(overlay, (0, 300), (1280, 500), (0, 0, 0), -1)
                 cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
 
-                self.draw_text_centered(frame, "FLC++ Codes in Python Game 6-7 Lamelo Ball", 
+                self.draw_text_centered(frame, "Can you do 6-7 the fastest?", 
                                        cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 3, 0.45)
                 self.draw_text_centered(frame, "Press ENTER to Play", 
                                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2, 0.6)
@@ -242,7 +238,7 @@ class HandRepCounter:
                 
                 final_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
                 
-                self.draw_text_centered(frame, "Thanks For Playing!", 
+                self.draw_text_centered(frame, "JOIN FLC++!", 
                                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3, 0.15)
                 self.draw_text_centered(frame, f"FINAL SCORE: {final_score}", 
                                        cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4, 0.3)
