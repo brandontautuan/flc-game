@@ -3,6 +3,9 @@ import mediapipe as mp
 import numpy as np
 from collections import deque
 import time
+import json
+import os
+from datetime import datetime
 
 class HandState:
     """Stores the state for a single hand (Left or Right)."""
@@ -38,17 +41,51 @@ class HandRepCounter:
         self.threshold_pct = 0.50 
 
         # Game State Variables
-        self.state = "TITLE" # TITLE, COUNTDOWN, PLAYING, GAME_OVER
+        self.state = "TITLE" # TITLE, COUNTDOWN, PLAYING, NAME_ENTRY, GAME_OVER
         self.start_time = 0
         self.game_duration = 15 # seconds
         self.countdown_start = 0
         self.countdown_duration = 3
+        self.input_name = ""  # Captures typed name
+
+        # Scoreboard
+        self.scoreboard_file = "scoreboard.json"
+        self.scores = self.load_scores()
 
         # Custom Splash Image
         self.splash_img_path = "/Users/brandontautuan/.gemini/antigravity/brain/f1a6865f-dcf4-44a6-acc9-a9ef0550f829/uploaded_media_1770240472819.jpg"
         self.splash_img = cv2.imread(self.splash_img_path)
         if self.splash_img is not None:
-            self.splash_img = cv2.resize(self.splash_img, (640, 480))
+            self.splash_img = cv2.resize(self.splash_img, (1280, 720))
+
+    def load_scores(self):
+        """Loads scores from JSON file."""
+        if os.path.exists(self.scoreboard_file):
+            try:
+                with open(self.scoreboard_file, "r") as f:
+                    return json.load(f)
+            except:
+                return []
+        return []
+
+    def save_score(self, final_score, name):
+        """Saves current score to the leaderboard."""
+        if not name.strip():
+            name = "Player"
+            
+        new_entry = {
+            "name": name,
+            "score": final_score,
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M")
+        }
+        self.scores.append(new_entry)
+        # Sort by score descending
+        self.scores.sort(key=lambda x: x["score"], reverse=True)
+        # Keep Top 10
+        self.scores = self.scores[:10]
+        
+        with open(self.scoreboard_file, "w") as f:
+            json.dump(self.scores, f, indent=4)
 
     def reset_game(self):
         """Resets counters and states for a new game."""
@@ -165,18 +202,66 @@ class HandRepCounter:
                 if key == 13: # Enter Key
                     self.reset_game()
 
+            # --- NAME ENTRY SCREEN ---
+            elif self.state == "NAME_ENTRY":
+                frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                
+                final_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
+                
+                self.draw_text_centered(frame, "NEW SCORE!", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3, 0.2)
+                self.draw_text_centered(frame, f"{final_score} REPS", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 3.0, (255, 255, 255), 5, 0.4)
+                
+                self.draw_text_centered(frame, "Enter Your Name:", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2, 0.6)
+                
+                # Display typing string
+                display_name = self.input_name + "_"
+                self.draw_text_centered(frame, display_name, 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 0), 4, 0.75)
+                
+                self.draw_text_centered(frame, "Press ENTER to Save", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 1, 0.9)
+
+                cv2.imshow(window_name, frame)
+                
+                # Input Handling for Name Entry
+                if key == 13: # Enter
+                    self.save_score(final_score, self.input_name)
+                    self.state = "GAME_OVER"
+                elif key == 8 or key == 127: # Backspace (Mac/Linux)
+                    self.input_name = self.input_name[:-1]
+                elif 32 <= key <= 126: # Regular Characters
+                    if len(self.input_name) < 15:
+                        self.input_name += chr(key)
+
             # --- GAME OVER SCREEN ---
             elif self.state == "GAME_OVER":
                 frame = np.zeros((720, 1280, 3), dtype=np.uint8)
                 
-                total_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
+                final_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
                 
                 self.draw_text_centered(frame, "Thanks For Playing!", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 2.0, (255, 255, 255), 3, 0.35)
-                self.draw_text_centered(frame, f"Final Score: {total_score}", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 2.5, (0, 255, 255), 5, 0.55)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3, 0.15)
+                self.draw_text_centered(frame, f"FINAL SCORE: {final_score}", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4, 0.3)
+
+                # Leaderboard Section
+                self.draw_text_centered(frame, "LOCAL TOP SCORES", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2, 0.45)
+                
+                for i, entry in enumerate(self.scores[:5]):
+                    name = entry.get('name', 'Player')
+                    rank_text = f"#{i+1} - {name}: {entry['score']} reps"
+                    
+                    # Highlight if it's the current player's just-saved score
+                    color = (0, 255, 215) if entry['score'] == final_score and name == self.input_name else (255, 255, 255)
+                    self.draw_text_centered(frame, rank_text, 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, 0.52 + (i * 0.06))
+
                 self.draw_text_centered(frame, "Press ENTER to Play Again", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, 0.75)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, 0.9)
 
                 cv2.imshow(window_name, frame)
                 
@@ -243,7 +328,8 @@ class HandRepCounter:
                     time_left = self.game_duration - (time.time() - self.start_time)
                     if time_left <= 0:
                         time_left = 0
-                        self.state = "GAME_OVER"
+                        self.input_name = ""  # Reset name buffer for entry screen
+                        self.state = "NAME_ENTRY"
                     
                     self.draw_visuals(display_image, height, width, time_left)
 
