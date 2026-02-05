@@ -210,6 +210,17 @@ class HandRepCounter:
             "Right": HandState()
         }
 
+        # Nordic Noir UI Design Tokens (BGR format)
+        self.colors = {
+            "bg": (18, 18, 18),         # #121212
+            "surface": (30, 30, 30),    # #1E1E1E
+            "accent": (246, 92, 139),   # #8B5CF6 (Electric Violet)
+            "text_high": (255, 255, 255),
+            "text_mid": (160, 160, 160),
+            "thresh_line": (246, 92, 139), # Match accent
+            "dot": (246, 92, 139)          # Match accent
+        }
+
         # Threshold (Percentage of screen height)
         self.threshold_pct = 0.50 
 
@@ -218,7 +229,7 @@ class HandRepCounter:
         self.start_time = 0
         self.game_duration = 15 # seconds
         self.countdown_start = 0
-        self.countdown_duration = 3
+        self.countdown_duration = 5
         self.input_name = ""  # Captures typed name
         self.selected_camera = None  # Will be set in camera select screen
 
@@ -338,7 +349,7 @@ class HandRepCounter:
         return colors.get(mode, (255, 255, 255))
 
     def process_hand_simple(self, label, landmarks, curr_time, width, height, display_image):
-        """Absolute minimum tracking for maximum speed."""
+        """Absolute minimum tracking with Nordic Noir styling."""
         current_hand = self.hand_states[label]
         
         # Focus ONLY on landmark 9 (Middle Finger MCP)
@@ -358,9 +369,11 @@ class HandRepCounter:
         else: # Below line
             current_hand.stage = "Down"
             
-        # Visual: Single dot for hand center (landmark 9)
+        # Visual: Single dot for hand center (landmark 9) - Nordic Noir Accent
         cx, cy = int(landmark_x * width), int(landmark_y * height)
-        cv2.circle(display_image, (cx, cy), 10, (0, 255, 0), -1)
+        cv2.circle(display_image, (cx, cy), 12, self.colors["accent"], -1)
+        # Subtle outer glow effect
+        cv2.circle(display_image, (cx, cy), 16, self.colors["accent"], 2)
         
         return cx, cy
 
@@ -377,17 +390,44 @@ class HandRepCounter:
         self.countdown_start = time.time()
 
     def draw_visuals(self, image, height, width, time_left):
-        """Absolute minimum visuals for maximum speed."""
+        """Premium Nordic Noir HUD with glassmorphism."""
         thresh_y = int(height * self.threshold_pct)
-        # Draw Threshold Line
-        cv2.line(image, (0, thresh_y), (width, thresh_y), (255, 0, 0), 2)
+        
+        # --- Glassmorphism HUD Bar ---
+        overlay = image.copy()
+        cv2.rectangle(overlay, (0, 0), (width, 80), self.colors["bg"], -1)
+        cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
+        
+        # --- Threshold Line (Electric Violet) ---
+        cv2.line(image, (0, thresh_y), (width, thresh_y), self.colors["thresh_line"], 3)
+        # Subtle dash/indicator
+        cv2.putText(image, "ACTIVE ZONE", (20, thresh_y - 15), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors["text_mid"], 1)
         
         # Calculate Total Score
         total_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
         
-        # Simple Score Overlay
-        timer_text = f"Time: {time_left:.1f}s | Score: {total_score}"
-        cv2.putText(image, timer_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
+        # --- HUD Content ---
+        # Time Left
+        cv2.putText(image, f"TIME", (width - 180, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.colors["text_mid"], 1)
+        timer_col = self.colors["text_high"] if time_left > 5 else (0, 60, 255) # Red-ish for warning
+        cv2.putText(image, f"{time_left:.1f}s", (width - 180, 65), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, timer_col, 2)
+        
+        # Score
+        cv2.putText(image, f"TOTAL REPS", (width // 2 - 60, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.colors["text_mid"], 1)
+        score_text = str(total_score)
+        score_size = cv2.getTextSize(score_text, cv2.FONT_HERSHEY_SIMPLEX, 1.4, 3)[0]
+        cv2.putText(image, score_text, (width // 2 - score_size[0] // 2, 65), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.4, self.colors["accent"], 3)
+        
+        # Hand Stages (Balanced Indicators)
+        l_col = self.colors["accent"] if self.hand_states["Left"].stage == "Up" else self.colors["text_mid"]
+        r_col = self.colors["accent"] if self.hand_states["Right"].stage == "Up" else self.colors["text_mid"]
+        cv2.putText(image, "LEFT HAND", (40, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, l_col, 1)
+        cv2.putText(image, "RIGHT HAND", (40, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, r_col, 1)
 
 
     def draw_text_centered(self, image, text, font, scale, color, thickness, y_pos_pct):
@@ -453,23 +493,23 @@ class HandRepCounter:
 
             # --- TITLE SCREEN ---
             if self.state == "TITLE":
-                # Create background (either splash or black)
+                # Create background (either splash or dark charcoal)
                 if self.splash_img is not None:
-                    # Dynamically resize splash to match current capture resolution (or vice versa)
-                    # For title, let's use 1280x720
                     frame = cv2.resize(self.splash_img, (1280, 720))
+                    # Darken it for "Noir" feel
+                    overlay = np.full_like(frame, self.colors["bg"])
+                    cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, frame)
                 else:
-                    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                    frame = np.full((720, 1280, 3), self.colors["bg"], dtype=np.uint8)
                 
-                # Semi-transparent overlay for text readability
-                overlay = frame.copy()
-                cv2.rectangle(overlay, (0, 300), (1280, 500), (0, 0, 0), -1)
-                cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+                # Header Accent Line (Removed full box for balance)
+                cv2.line(frame, (400, 360), (880, 360), self.colors["accent"], 1)
+                cv2.line(frame, (400, 470), (880, 470), self.colors["accent"], 1)
 
                 self.draw_text_centered(frame, "Can you do 6-7 the fastest?", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 3, 0.45)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.8, self.colors["text_high"], 4, 0.45)
                 self.draw_text_centered(frame, "Press ENTER to Play", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 2, 0.6)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, self.colors["text_high"], 2, 0.58)
                 
                 cv2.imshow(window_name, frame)
                 
@@ -503,25 +543,30 @@ class HandRepCounter:
 
             # --- NAME ENTRY SCREEN ---
             elif self.state == "NAME_ENTRY":
-                frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                frame = np.full((720, 1280, 3), self.colors["bg"], dtype=np.uint8)
                 
                 final_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
                 
+                # Glassmorphism Card
+                cv2.rectangle(frame, (340, 100), (940, 620), self.colors["surface"], -1)
+                cv2.rectangle(frame, (340, 100), (940, 620), self.colors["accent"], 2)
+                
                 self.draw_text_centered(frame, "NEW SCORE!", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3, 0.2)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, self.colors["accent"], 3, 0.22)
                 self.draw_text_centered(frame, f"{final_score} REPS", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 3.0, (255, 255, 255), 5, 0.4)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 3.0, self.colors["text_high"], 5, 0.42)
                 
-                self.draw_text_centered(frame, "Enter Your Name:", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2, 0.6)
+                self.draw_text_centered(frame, "ENTER YOUR NAME", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.colors["text_mid"], 1, 0.58)
                 
-                # Display typing string
+                # Input Box
+                cv2.rectangle(frame, (440, 480), (840, 560), (45, 45, 45), -1)
                 display_name = self.input_name + "_"
                 self.draw_text_centered(frame, display_name, 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 0), 4, 0.75)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, self.colors["text_high"], 3, 0.74)
                 
                 self.draw_text_centered(frame, "Press ENTER to Save", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (150, 150, 150), 1, 0.9)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.colors["text_mid"], 1, 0.9)
 
                 cv2.imshow(window_name, frame)
                 
@@ -537,59 +582,57 @@ class HandRepCounter:
 
             # --- GAME OVER SCREEN ---
             elif self.state == "GAME_OVER":
-                frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                frame = np.full((720, 1280, 3), self.colors["bg"], dtype=np.uint8)
                 
                 final_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
                 
                 # --- Center Header (Text + QR Side-by-Side) ---
                 text = "JOIN FLC++!"
                 font = cv2.FONT_HERSHEY_SIMPLEX
-                scale = 1.8
-                thickness = 4
+                scale = 1.4
+                thickness = 3
                 text_size = cv2.getTextSize(text, font, scale, thickness)[0]
                 
-                qr_display_size = 150 # Slightly smaller for better fit
-                spacing = 40
+                qr_display_size = 120
+                spacing = 30
                 
                 total_w = text_size[0] + spacing + qr_display_size
                 start_x = (1280 - total_w) // 2
-                base_y = int(720 * 0.18) # Vertical center for this header block
+                base_y = int(720 * 0.15)
                 
                 # Draw Text
                 cv2.putText(frame, text, (start_x, base_y + text_size[1]//2), 
-                           font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                           font, scale, self.colors["text_high"], thickness, cv2.LINE_AA)
                 
                 # Draw QR next to it
                 if self.qr_img is not None:
-                    # Resize for this specific layout if needed
                     qr_resized = cv2.resize(self.qr_img, (qr_display_size, qr_display_size))
                     qr_h, qr_w, _ = qr_resized.shape
                     qr_x = start_x + text_size[0] + spacing
                     qr_y = base_y - qr_h // 2
-                    
-                    # Safety check for image slicing
-                    y1, y2 = max(0, qr_y), min(720, qr_y + qr_h)
-                    x1, x2 = max(0, qr_x), min(1280, qr_x + qr_w)
-                    frame[y1:y2, x1:x2] = qr_resized[0:(y2-y1), 0:(x2-x1)]
+                    frame[qr_y:qr_y+qr_h, qr_x:qr_x+qr_w] = qr_resized
 
                 self.draw_text_centered(frame, f"FINAL SCORE: {final_score}", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4, 0.35)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.8, self.colors["accent"], 4, 0.32)
 
-                # Leaderboard Section
+                # --- Leaderboard Panel ---
+                cv2.rectangle(frame, (340, 280), (940, 640), self.colors["surface"], -1)
+                cv2.line(frame, (340, 280), (940, 280), self.colors["accent"], 1)
+                
                 self.draw_text_centered(frame, "LOCAL TOP SCORES", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (200, 200, 200), 2, 0.45)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, self.colors["text_mid"], 2, 0.35)
                 
                 for i, entry in enumerate(self.scores[:5]):
                     name = entry.get('name', 'Player')
-                    rank_text = f"#{i+1} - {name}: {entry['score']} reps"
+                    rank_text = f"#{i+1}  {name.upper():<12} {entry['score']} REPS"
                     
                     # Highlight if it's the current player's just-saved score
-                    color = (0, 255, 215) if entry['score'] == final_score and name == self.input_name else (255, 255, 255)
+                    color = self.colors["accent"] if entry['score'] == final_score and name == self.input_name else self.colors["text_mid"]
                     self.draw_text_centered(frame, rank_text, 
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, 0.52 + (i * 0.06))
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2, 0.44 + (i * 0.08))
 
                 self.draw_text_centered(frame, "Press ENTER to Play Again", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, 0.9)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.colors["text_mid"], 1, 0.92)
 
                 cv2.imshow(window_name, frame)
                 
@@ -638,18 +681,18 @@ class HandRepCounter:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 if self.state == "COUNTDOWN":
                     elapsed = time.time() - self.countdown_start
-                    count_val = 3 - int(elapsed)
+                    count_val = self.countdown_duration - int(elapsed)
                     
                     self.draw_visuals(display_image, height, width, 15.0) 
                     
                     if count_val > 0:
                         self.draw_text_centered(display_image, str(count_val), 
-                                               cv2.FONT_HERSHEY_SIMPLEX, 6.0, (0, 0, 255), 10, 0.55)
+                                               cv2.FONT_HERSHEY_SIMPLEX, 6.0, self.colors["text_high"], 10, 0.55)
                     else:
                         self.draw_text_centered(display_image, "GO!", 
-                                               cv2.FONT_HERSHEY_SIMPLEX, 5.0, (0, 255, 0), 8, 0.55)
+                                               cv2.FONT_HERSHEY_SIMPLEX, 5.0, self.colors["accent"], 8, 0.55)
                         
-                    if elapsed > 3.5:
+                    if elapsed > (self.countdown_duration + 0.5):
                         self.state = "PLAYING"
                         self.start_time = time.time()
 
