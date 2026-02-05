@@ -261,6 +261,12 @@ class HandRepCounter:
         if self.splash_img is not None:
             self.splash_img = cv2.resize(self.splash_img, (1280, 720))
 
+        # QR Code for Join FLC++
+        self.qr_img_path = "/Users/brandontautuan/.gemini/antigravity/brain/f1a6865f-dcf4-44a6-acc9-a9ef0550f829/uploaded_media_1770265211815.png"
+        self.qr_img = cv2.imread(self.qr_img_path)
+        if self.qr_img is not None:
+            self.qr_img = cv2.resize(self.qr_img, (200, 200)) # Standard QR size
+
     def find_camo_camera(self):
         """Automatically discover Camo virtual camera by testing indices 0-5."""
         print("Searching for Camo camera...")
@@ -468,7 +474,9 @@ class HandRepCounter:
                 cv2.imshow(window_name, frame)
                 
                 if key == 13: # Enter Key
-                    self.state = "CAMERA_SELECT"
+                    # Bypassing CAMERA_SELECT for normal mode
+                    self.selected_camera = 0 
+                    self.reset_game()
 
             # --- CAMERA SELECT SCREEN ---
             elif self.state == "CAMERA_SELECT":
@@ -533,10 +541,39 @@ class HandRepCounter:
                 
                 final_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
                 
-                self.draw_text_centered(frame, "JOIN FLC++!", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3, 0.15)
+                # --- Center Header (Text + QR Side-by-Side) ---
+                text = "JOIN FLC++!"
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale = 1.8
+                thickness = 4
+                text_size = cv2.getTextSize(text, font, scale, thickness)[0]
+                
+                qr_display_size = 150 # Slightly smaller for better fit
+                spacing = 40
+                
+                total_w = text_size[0] + spacing + qr_display_size
+                start_x = (1280 - total_w) // 2
+                base_y = int(720 * 0.18) # Vertical center for this header block
+                
+                # Draw Text
+                cv2.putText(frame, text, (start_x, base_y + text_size[1]//2), 
+                           font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                
+                # Draw QR next to it
+                if self.qr_img is not None:
+                    # Resize for this specific layout if needed
+                    qr_resized = cv2.resize(self.qr_img, (qr_display_size, qr_display_size))
+                    qr_h, qr_w, _ = qr_resized.shape
+                    qr_x = start_x + text_size[0] + spacing
+                    qr_y = base_y - qr_h // 2
+                    
+                    # Safety check for image slicing
+                    y1, y2 = max(0, qr_y), min(720, qr_y + qr_h)
+                    x1, x2 = max(0, qr_x), min(1280, qr_x + qr_w)
+                    frame[y1:y2, x1:x2] = qr_resized[0:(y2-y1), 0:(x2-x1)]
+
                 self.draw_text_centered(frame, f"FINAL SCORE: {final_score}", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4, 0.3)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 2.0, (0, 255, 255), 4, 0.35)
 
                 # Leaderboard Section
                 self.draw_text_centered(frame, "LOCAL TOP SCORES", 
@@ -629,7 +666,8 @@ class HandRepCounter:
 
 
         self.hands.close()
-        vs.stop()
+        if vs is not None:
+            vs.stop()
         cv2.destroyAllWindows()
 
 
