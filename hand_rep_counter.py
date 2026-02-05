@@ -173,14 +173,12 @@ class BlobTracker:
         return (cx / width, cy / height)
 
 class HandState:
-    """Stores the state for a single hand (Left or Right)."""
+    """Simplified state for absolute minimum tracking."""
     def __init__(self):
         self.count = 0
-        self.stage = "Neutral"
-        self.filter = None  # OneEuroFilter initialized on first frame
-        
-        # Fail-safe tracking
-        self.tracking_mode = "CONFIRMED"  # CONFIRMED, PREDICTED, BLOB_FALLBACK, LERP
+        self.stage = "Down"
+        self.last_count_time = 0  # For 300ms debounce
+        self.tracking_mode = "CONFIRMED"
         self.last_velocity = (0.0, 0.0)
         self.prediction_frames = 0
         self.max_prediction_frames = 10
@@ -200,9 +198,9 @@ class HandRepCounter:
         self.mp_drawing = mp.solutions.drawing_utils
         self.mp_hands = mp.solutions.hands
         self.hands = self.mp_hands.Hands(
-            min_detection_confidence=0.4, # Lower for fast recovery
-            min_tracking_confidence=0.4,
-            model_complexity=0, 
+            min_detection_confidence=0.3, # Faster detection
+            min_tracking_confidence=0.3,
+            model_complexity=0, # Use Lite model for speed
             max_num_hands=2
         )
 
@@ -333,103 +331,37 @@ class HandRepCounter:
         }
         return colors.get(mode, (255, 255, 255))
 
-    def process_hand_with_failsafe(self, label, landmark_x, landmark_y, curr_time, width, height, display_image):
-        """Process a single hand with fail-safe tracking modes."""
+    def process_hand_simple(self, label, landmarks, curr_time, width, height, display_image):
+        """Absolute minimum tracking for maximum speed."""
         current_hand = self.hand_states[label]
-        kalman = self.kalman_trackers[label]
         
-        # Check if transitioning from prediction back to confirmation
-        if current_hand.tracking_mode in ["PREDICTED", "BLOB_FALLBACK"]:
-            current_hand.tracking_mode = "LERP"
-            current_hand.lerp_start_pos = self.hand_positions.get(label, (landmark_x, landmark_y))
-            current_hand.lerp_target_pos = (landmark_x, landmark_y)
-            current_hand.lerp_progress = 0.0
+        # Focus ONLY on landmark 9 (Middle Finger MCP)
+        lm9 = landmarks[9]
+        landmark_x, landmark_y = lm9.x, lm9.y
         
-        # Handle LERP transition
-        if current_hand.tracking_mode == "LERP":
-            current_hand.lerp_progress += 0.2  # 5 frames to complete
-            if current_hand.lerp_progress >= 1.0:
-                current_hand.tracking_mode = "CONFIRMED"
-                final_x, final_y = landmark_x, landmark_y
-            else:
-                final_x = self.lerp(current_hand.lerp_start_pos[0], landmark_x, current_hand.lerp_progress)
-                final_y = self.lerp(current_hand.lerp_start_pos[1], landmark_y, current_hand.lerp_progress)
-        else:
-            current_hand.tracking_mode = "CONFIRMED"
-            final_x, final_y = landmark_x, landmark_y
+        # Debounce logic: 300ms cooldown
+        cooldown = 0.3  # 300ms
+        can_count = (curr_time - current_hand.last_count_time) > cooldown
         
-        # Update velocity
-        if label in self.hand_positions:
-            prev_x, prev_y = self.hand_positions[label]
-            current_hand.last_velocity = (final_x - prev_x, final_y - prev_y)
-        
-        self.hand_positions[label] = (final_x, final_y)
-        current_hand.prediction_frames = 0
-        kalman.update(final_x, final_y)
-        
-        # Game logic
-        smooth_y = current_hand.smooth_value(curr_time, final_y)
-        if smooth_y < self.threshold_pct: current_hand.stage = "Up"
-        elif smooth_y > self.threshold_pct:
-            if current_hand.stage == "Up":
-                current_hand.stage = "Down"
+        # Simple Trigger: If current_y < threshold AND was_below_line is True, increment count
+        if landmark_y < self.threshold_pct: # Above line
+            if current_hand.stage == "Down" and can_count:
                 current_hand.count += 1
-        
-        # Draw marker with color coding
-        cx, cy = int(final_x * width), int(final_y * height)
-        color = self.get_tracking_color(current_hand.tracking_mode)
-        cv2.circle(display_image, (cx, cy), 15, color, -1)
-        cv2.putText(display_image, current_hand.tracking_mode[:4], (cx-20, cy-20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                current_hand.last_count_time = curr_time
+                current_hand.stage = "Up"
+        else: # Below line
+            current_hand.stage = "Down"
+            
+        # Visual: Single dot for hand center (landmark 9)
+        cx, cy = int(landmark_x * width), int(landmark_y * height)
+        cv2.circle(display_image, (cx, cy), 10, (0, 255, 0), -1)
         
         return cx, cy
 
     def handle_lost_hand(self, label, curr_time, width, height, display_image, image):
-        """Handle a hand that wasn't detected - activate fail-safe."""
-        current_hand = self.hand_states[label]
-        current_hand.prediction_frames += 1
-        
-        if current_hand.prediction_frames > current_hand.max_prediction_frames:
-            return None  # Too many frames lost
-        
-        if label not in self.hand_positions:
-            return None
-        
-        last_x, last_y = self.hand_positions[label]
-        vx, vy = current_hand.last_velocity
-        
-        # Velocity-based prediction
-        pred_x = max(0.0, min(1.0, last_x + vx))
-        pred_y = max(0.0, min(1.0, last_y + vy))
-        current_hand.tracking_mode = "PREDICTED"
-        
-        # Try blob tracking fallback
-        blob_tracker = self.blob_trackers[label]
-        blob_result = blob_tracker.find_hand_blob(image, last_x, last_y)
-        
-        if blob_result:
-            pred_x = 0.7 * pred_x + 0.3 * blob_result[0]
-            pred_y = 0.7 * pred_y + 0.3 * blob_result[1]
-            current_hand.tracking_mode = "BLOB_FALLBACK"
-        
-        self.hand_positions[label] = (pred_x, pred_y)
-        
-        # Game logic with predicted position
-        smooth_y = current_hand.smooth_value(curr_time, pred_y)
-        if smooth_y < self.threshold_pct: current_hand.stage = "Up"
-        elif smooth_y > self.threshold_pct:
-            if current_hand.stage == "Up":
-                current_hand.stage = "Down"
-                current_hand.count += 1
-        
-        # Draw predicted marker
-        cx, cy = int(pred_x * width), int(pred_y * height)
-        color = self.get_tracking_color(current_hand.tracking_mode)
-        cv2.circle(display_image, (cx, cy), 15, color, -1)
-        cv2.putText(display_image, current_hand.tracking_mode[:4], (cx-20, cy-20),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        
-        return (cx, cy)
+        """Simplified: No fallback in speed mode."""
+        self.hand_states[label].stage = "Down" # Reset state if lost
+        return None
 
     def reset_game(self):
         """Resets counters and states for a new game."""
@@ -439,52 +371,17 @@ class HandRepCounter:
         self.countdown_start = time.time()
 
     def draw_visuals(self, image, height, width, time_left):
-        """Draws game HUD during PLAYING state."""
-        
+        """Absolute minimum visuals for maximum speed."""
         thresh_y = int(height * self.threshold_pct)
-
         # Draw Threshold Line
         cv2.line(image, (0, thresh_y), (width, thresh_y), (255, 0, 0), 2)
-        cv2.putText(image, 'THRESHOLD', (int(width/2) - 60, thresh_y - 10), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1, cv2.LINE_AA)
-
-        # Calculate Total Paired Score
-        left_state = self.hand_states["Left"]
-        right_state = self.hand_states["Right"]
-        total_score = min(left_state.count, right_state.count)
-
-        # Draw Counters (Left/Right)
-        # Left
-        cv2.rectangle(image, (0, 0), (160, 80), (50, 50, 50), -1)
-        cv2.putText(image, 'LEFT', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-        l_stage_color = (0, 255, 0) if left_state.stage == "Up" else (0, 0, 255)
-        cv2.putText(image, str(left_state.count), (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(image, left_state.stage, (80, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, l_stage_color, 2, cv2.LINE_AA)
-
-        # Right
-        cv2.rectangle(image, (width - 160, 0), (width, 80), (50, 50, 50), -1)
-        cv2.putText(image, 'RIGHT', (width - 150, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-        r_stage_color = (0, 255, 0) if right_state.stage == "Up" else (0, 0, 255)
-        text_w_count = cv2.getTextSize(str(right_state.count), cv2.FONT_HERSHEY_SIMPLEX, 1.2, 2)[0][0]
-        cv2.putText(image, str(right_state.count), (width - 20 - text_w_count, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(image, right_state.stage, (width - 150, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, r_stage_color, 2, cv2.LINE_AA)
-
-        # Draw Center Info (Score + Timer)
-        cv2.rectangle(image, (int(width/2) - 80, 0), (int(width/2) + 80, 90), (0, 0, 0), -1)
         
-        # Score
-        cv2.putText(image, 'SCORE', (int(width/2) - 30, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
-        score_text = str(total_score)
-        text_w_score = cv2.getTextSize(score_text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 2)[0][0]
-        cv2.putText(image, score_text, (int(width/2) - int(text_w_score/2), 55), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3, cv2.LINE_AA)
-
-        # Timer
-        timer_text = f"{time_left:.1f}s"
-        text_w_timer = cv2.getTextSize(timer_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 1)[0][0]
-        color_timer = (0, 255, 0) if time_left > 5 else (0, 0, 255)
-        cv2.putText(image, timer_text, (int(width/2) - int(text_w_timer/2), 80), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_timer, 2, cv2.LINE_AA)
+        # Calculate Total Score
+        total_score = min(self.hand_states["Left"].count, self.hand_states["Right"].count)
+        
+        # Simple Score Overlay
+        timer_text = f"Time: {time_left:.1f}s | Score: {total_score}"
+        cv2.putText(image, timer_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
 
 
     def draw_text_centered(self, image, text, font, scale, color, thickness, y_pos_pct):
@@ -682,77 +579,21 @@ class HandRepCounter:
 
                 # --- TRACKING ---
                 if self.state == "PLAYING":
-                    self.frame_counter += 1
-                    should_process = (self.frame_counter % self.process_every_n_frames == 0)
+                    # Process EVERY frame for maximum speed at 60 FPS
+                    inference_frame = cv2.resize(image_rgb, (self.inference_width, self.inference_height))
+                    results = self.hands.process(inference_frame)
                     
-                    if should_process:
-                        # Optimization: Resize for inference
-                        inference_frame = cv2.resize(image_rgb, (self.inference_width, self.inference_height))
-                        
-                        # AI Image Boosting
-                        inference_frame = cv2.convertScaleAbs(inference_frame, alpha=1.2, beta=30)
-                        
-                        results = self.hands.process(inference_frame)
-                        
-                        # Detection Recovery Logic
-                        if results.multi_hand_landmarks:
-                            self.last_results = results
-                            self.lost_frames = 0
-                        else:
-                            if self.last_results and self.lost_frames < self.max_lost_frames:
-                                results = self.last_results
-                                self.lost_frames += 1
-                            else:
-                                self.last_results = None
-                        
-                        
-                        # Track which hands were detected
-                        detected_hands = set()
-                        
-                        if results and results.multi_hand_landmarks and results.multi_handedness:
-                            for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                                label = handedness.classification[0].label
-                                if label not in self.hand_states: continue
+                    if results and results.multi_hand_landmarks and results.multi_handedness:
+                        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+                            label = handedness.classification[0].label
+                            if label not in self.hand_states: continue
 
-                                detected_hands.add(label)
-                                
-                                # Draw landmarks
-                                self.mp_drawing.draw_landmarks(display_image, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
-                                
-                                # Find HIGHEST POINT of hand (minimum Y value across all landmarks)
-                                highest_y = min(lm.y for lm in hand_landmarks.landmark)
-                                highest_x = next(lm.x for lm in hand_landmarks.landmark if lm.y == highest_y)
-                                
-                                # Process with fail-safe logic using highest point
-                                self.process_hand_with_failsafe(label, highest_x, highest_y, curr_time, width, height, display_image)
-                        
-                        # Handle hands that weren't detected - FAIL-SAFE ACTIVATION
-                        for label in ["Left", "Right"]:
-                            if label not in detected_hands:
-                                self.handle_lost_hand(label, curr_time, width, height, display_image, image)
-                    
+                            # Absolute minimum tracking logic (Landmark 9 + Debounce)
+                            self.process_hand_simple(label, hand_landmarks.landmark, curr_time, width, height, display_image)
                     else:
-                        # FRAME SKIPPING: Use Kalman prediction
+                        # Handle loss simply
                         for label in ["Left", "Right"]:
-                            kalman = self.kalman_trackers[label]
-                            prediction = kalman.predict()
-                            
-                            if prediction:
-                                px, py = prediction
-                                current_hand = self.hand_states[label]
-                                
-                                # Use prediction for game logic
-                                smooth_y = current_hand.smooth_value(curr_time, py)
-                                
-                                if smooth_y < self.threshold_pct: current_hand.stage = "Up"
-                                elif smooth_y > self.threshold_pct:
-                                    if current_hand.stage == "Up":
-                                        current_hand.stage = "Down"
-                                        current_hand.count += 1
-                                
-                                # Draw predicted position (different color)
-                                cx, cy = int(px * width), int(py * height)
-                                cv2.circle(display_image, (cx, cy), 10, (100, 100, 255), -1)  # Blue for prediction
+                            self.handle_lost_hand(label, curr_time, width, height, display_image, image)
 
                 # --- HUD & LOGIC ---
                 # Show FPS Overlay
