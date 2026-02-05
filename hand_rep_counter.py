@@ -348,7 +348,7 @@ class HandRepCounter:
         }
         return colors.get(mode, (255, 255, 255))
 
-    def process_hand_simple(self, label, landmarks, curr_time, width, height, display_image):
+    def process_hand_simple(self, label, landmarks, curr_time, width, height, display_image, enable_counting=True):
         """Absolute minimum tracking with Nordic Noir styling."""
         current_hand = self.hand_states[label]
         
@@ -363,7 +363,8 @@ class HandRepCounter:
         # Simple Trigger: If current_y < threshold AND was_below_line is True, increment count
         if landmark_y < self.threshold_pct: # Above line
             if current_hand.stage == "Down" and can_count:
-                current_hand.count += 1
+                if enable_counting:
+                    current_hand.count += 1
                 current_hand.last_count_time = curr_time
                 current_hand.stage = "Up"
         else: # Below line
@@ -428,6 +429,37 @@ class HandRepCounter:
         r_col = self.colors["accent"] if self.hand_states["Right"].stage == "Up" else self.colors["text_mid"]
         cv2.putText(image, "LEFT HAND", (40, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, l_col, 1)
         cv2.putText(image, "RIGHT HAND", (40, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, r_col, 1)
+
+
+    def draw_calibration_hud(self, image, height, width):
+        """Focused HUD for camera/hand calibration."""
+        thresh_y = int(height * self.threshold_pct)
+        
+        # --- Glassmorphism HUD Bar ---
+        overlay = image.copy()
+        cv2.rectangle(overlay, (0, 0), (width, 80), self.colors["bg"], -1)
+        cv2.addWeighted(overlay, 0.6, image, 0.4, 0, image)
+        
+        # --- Threshold Line ---
+        cv2.line(image, (0, thresh_y), (width, thresh_y), self.colors["thresh_line"], 3)
+        cv2.putText(image, "THRESHOLD LINE", (20, thresh_y - 15), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors["text_mid"], 1)
+
+        # Calibration Info
+        self.draw_text_centered(image, "CALIBRATION MODE - ADJUST PLACEMENT", 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.colors["text_high"], 2, 0.05)
+        self.draw_text_centered(image, "Press 'B' or ESC to Return to Menu", 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors["text_mid"], 1, 0.09)
+
+        # Hand Status Indicators
+        l_status = "DETECTED" if self.hand_states["Left"].stage == "Up" else "SEARCHING..."
+        r_status = "DETECTED" if self.hand_states["Right"].stage == "Up" else "SEARCHING..."
+        
+        l_col = self.colors["accent"] if "DETECTED" in l_status else self.colors["text_mid"]
+        r_col = self.colors["accent"] if "DETECTED" in r_status else self.colors["text_mid"]
+        
+        cv2.putText(image, f"LEFT: {l_status}", (40, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, l_col, 1)
+        cv2.putText(image, f"RIGHT: {r_status}", (40, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.5, r_col, 1)
 
 
     def draw_text_centered(self, image, text, font, scale, color, thickness, y_pos_pct):
@@ -507,9 +539,11 @@ class HandRepCounter:
                 cv2.line(frame, (400, 470), (880, 470), self.colors["accent"], 1)
 
                 self.draw_text_centered(frame, "Can you do 6-7 the fastest?", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.8, self.colors["text_high"], 4, 0.45)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.8, self.colors["text_high"], 4, 0.42)
                 self.draw_text_centered(frame, "Press ENTER to Play", 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, self.colors["text_high"], 2, 0.58)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, self.colors["text_high"], 2, 0.55)
+                self.draw_text_centered(frame, "Press C for Calibration", 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.colors["accent"], 1, 0.62)
                 
                 cv2.imshow(window_name, frame)
                 
@@ -517,6 +551,13 @@ class HandRepCounter:
                     # Bypassing CAMERA_SELECT for normal mode
                     self.selected_camera = 0 
                     self.reset_game()
+                elif key == ord('c'): # Calibration Mode
+                    self.selected_camera = 0
+                    self.state = "CALIBRATION"
+                    # Reset hand states for fresh tracking
+                    for label in self.hand_states:
+                        self.hand_states[label].count = 0
+                        self.hand_states[label].stage = "Down"
 
             # --- CAMERA SELECT SCREEN ---
             elif self.state == "CAMERA_SELECT":
@@ -658,7 +699,8 @@ class HandRepCounter:
                 height, width, _ = display_image.shape
 
                 # --- TRACKING ---
-                if self.state == "PLAYING":
+                # Run tracking in all camera-active states for immediate visual feedback
+                if self.state in ["COUNTDOWN", "PLAYING", "CALIBRATION"]:
                     # Process EVERY frame for maximum speed at 60 FPS
                     inference_frame = cv2.resize(image_rgb, (self.inference_width, self.inference_height))
                     results = self.hands.process(inference_frame)
@@ -669,7 +711,9 @@ class HandRepCounter:
                             if label not in self.hand_states: continue
 
                             # Absolute minimum tracking logic (Landmark 9 + Debounce)
-                            self.process_hand_simple(label, hand_landmarks.landmark, curr_time, width, height, display_image)
+                            # Only enable counting in the PLAYING state
+                            counting_active = (self.state == "PLAYING")
+                            self.process_hand_simple(label, hand_landmarks.landmark, curr_time, width, height, display_image, enable_counting=counting_active)
                     else:
                         # Handle loss simply
                         for label in ["Left", "Right"]:
@@ -704,6 +748,15 @@ class HandRepCounter:
                         self.state = "NAME_ENTRY"
                     
                     self.draw_visuals(display_image, height, width, time_left)
+
+                elif self.state == "CALIBRATION":
+                    # No timer, just show calibration info
+                    self.draw_calibration_hud(display_image, height, width)
+                    if key == ord('b') or key == 27: # 'B' or ESC to return
+                        if vs is not None:
+                            vs.stop()
+                            vs = None
+                        self.state = "TITLE"
 
                 cv2.imshow(window_name, display_image)
 
